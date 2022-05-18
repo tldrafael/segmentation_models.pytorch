@@ -13,8 +13,10 @@ class DecoderBlock(nn.Module):
         out_channels,
         use_batchnorm=True,
         attention_type=None,
+        scale_factor = 2,
     ):
         super().__init__()
+        self.scale_factor = scale_factor
         self.conv1 = md.Conv2dReLU(
             in_channels + skip_channels,
             out_channels,
@@ -33,7 +35,9 @@ class DecoderBlock(nn.Module):
         self.attention2 = md.Attention(attention_type, in_channels=out_channels)
 
     def forward(self, x, skip=None):
-        x = F.interpolate(x, scale_factor=2, mode="nearest")
+        if self.scale_factor != 1:
+            x = F.interpolate(x, scale_factor=self.scale_factor, mode="nearest")
+
         if skip is not None:
             x = torch.cat([x, skip], dim=1)
             x = self.attention1(x)
@@ -71,6 +75,8 @@ class UnetDecoder(nn.Module):
         use_batchnorm=True,
         attention_type=None,
         center=False,
+        fl_maxpool=True,
+        **kwargs,
     ):
         super().__init__()
 
@@ -98,10 +104,14 @@ class UnetDecoder(nn.Module):
             self.center = nn.Identity()
 
         # combine decoder keyword arguments
+        scale_factors = [2 for _ in range(len(out_channels))]
+        if not fl_maxpool:
+            scale_factors[-2] = 1
+
         kwargs = dict(use_batchnorm=use_batchnorm, attention_type=attention_type)
         blocks = [
-            DecoderBlock(in_ch, skip_ch, out_ch, **kwargs)
-            for in_ch, skip_ch, out_ch in zip(in_channels, skip_channels, out_channels)
+            DecoderBlock(in_ch, skip_ch, out_ch, scale_factor=f, **kwargs)
+            for in_ch, skip_ch, out_ch, f in zip(in_channels, skip_channels, out_channels, scale_factors)
         ]
         self.blocks = nn.ModuleList(blocks)
 

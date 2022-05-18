@@ -65,7 +65,7 @@ def get_encoder(name, in_channels=3, depth=5, weights=None, output_stride=32, **
 
     params = encoders[name]["params"]
     params.update(depth=depth)
-    encoder = Encoder(**params)
+    encoder = Encoder(**params, **kwargs)
 
     if weights is not None:
         try:

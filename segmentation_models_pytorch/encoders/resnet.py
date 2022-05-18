@@ -24,6 +24,7 @@ Methods:
 """
 from copy import deepcopy
 
+import torch
 import torch.nn as nn
 
 from torchvision.models.resnet import ResNet
@@ -34,12 +35,177 @@ from pretrainedmodels.models.torchvision_models import pretrained_settings
 from ._base import EncoderMixin
 
 
+def conv7x7(in_planes, out_planes, stride=1, groups=1, dilation=1):
+    """7x7 convolution with padding"""
+    return nn.Conv2d(in_planes, out_planes, kernel_size=7, stride=stride,
+                     padding=3 * dilation, groups=groups, bias=False, dilation=dilation)
+
+
+def conv5x5(in_planes, out_planes, stride=1, groups=1, dilation=1):
+    """5x5 convolution with padding"""
+    return nn.Conv2d(in_planes, out_planes, kernel_size=5, stride=stride,
+                     padding=2 * dilation, groups=groups, bias=False, dilation=dilation)
+
+
+def conv3x3(in_planes, out_planes, stride=1, groups=1, dilation=1):
+    """3x3 convolution with padding"""
+    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
+                     padding=dilation, groups=groups, bias=False, dilation=dilation)
+
+
+def conv1x1(in_planes, out_planes, stride=1):
+    """1x1 convolution"""
+    return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
+
+
+class StemBlock1(nn.Module):
+    def __init__(self, inplanes, planes, stride=1):
+        super().__init__()
+        self.conv1 = conv3x3(inplanes, planes[0])
+        self.bn1 = nn.BatchNorm2d(planes[0])
+
+        self.conv2 = conv5x5(inplanes, planes[1])
+        self.bn2 = nn.BatchNorm2d(planes[1])
+
+        self.conv3 = conv7x7(inplanes, planes[2])
+        self.bn3 = nn.BatchNorm2d(planes[2])
+
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        out_1 = self.conv1(x)
+        out_1 = self.bn1(out_1)
+
+        out_2 = self.conv2(x)
+        out_2 = self.bn2(out_2)
+
+        out_3 = self.conv3(x)
+        out_3 = self.bn3(out_3)
+
+        out = torch.cat([out_1, out_2, out_3], dim=1)
+        return self.relu(out)
+
+
+class StemBlock2(nn.Module):
+    def __init__(self, inplanes, planes, stride=2, channel_reduction=16, dilation=1):
+        super().__init__()
+        self.conv1 = conv1x1(inplanes, planes[0], stride=stride)
+        self.bn1 = nn.BatchNorm2d(planes[0])
+
+        self.conv2_1 = conv1x1(inplanes, channel_reduction)
+        self.conv2_2 = conv3x3(channel_reduction, planes[1], stride=stride)
+        self.bn2 = nn.BatchNorm2d(planes[1])
+
+        self.conv3_1 = conv1x1(inplanes, channel_reduction)
+        self.conv3_2 = conv5x5(channel_reduction, planes[2], stride=stride)
+        self.bn3 = nn.BatchNorm2d(planes[2])
+
+        self.conv4_1 = conv1x1(inplanes, channel_reduction)
+        self.conv4_2 = conv7x7(channel_reduction, planes[3], stride=stride)
+        self.bn4 = nn.BatchNorm2d(planes[3])
+
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=stride, padding=1)
+        self.conv5 = conv1x1(inplanes, planes[4])
+        self.bn5 = nn.BatchNorm2d(planes[4])
+
+        self.relu = nn.ReLU(inplace=True)
+        self.stride = stride
+        self.downsample = nn.Sequential(
+                            conv1x1(inplanes, sum(planes), stride=stride),
+                            nn.BatchNorm2d(sum(planes))
+                            )
+
+        self.conv6 = conv1x1(sum(planes), 64, stride=1)
+        self.bn6 = nn.BatchNorm2d(64)
+
+    def forward(self, x):
+        identity = x
+
+        out_1 = self.conv1(x)
+        out_1 = self.bn1(out_1)
+
+        out_2 = self.conv2_1(x)
+        out_2 = self.conv2_2(out_2)
+        out_2 = self.bn2(out_2)
+
+        out_3 = self.conv3_1(x)
+        out_3 = self.conv3_2(out_3)
+        out_3 = self.bn3(out_3)
+
+        out_4 = self.conv4_1(x)
+        out_4 = self.conv4_2(out_4)
+        out_4 = self.bn4(out_4)
+
+        out_5 = self.maxpool(x)
+        out_5 = self.conv5(out_5)
+        out_5 = self.bn5(out_5)
+
+        out = torch.cat([out_1, out_2, out_3, out_4, out_5], dim=1)
+        out += self.downsample(identity)
+        out = self.relu(out)
+
+        out = self.conv6(out)
+        out = self.bn6(out)
+        return self.relu(out)
+
+
+class RichStem(nn.Module):
+    def __init__(self, **kwargs):
+        super().__init__()
+        self.block1 = StemBlock1(3, [24, 24, 24])
+        self.block2 = StemBlock2(72, [32, 64, 64, 64, 32], channel_reduction=16)
+
+    def forward(self, x):
+        out = self.block1(x)
+        return self.block2(out)
+
+
+class ClassicStem(nn.Module):
+    def __init__(self, inplanes=64, **kwargs):
+        super().__init__()
+        self.conv1 = nn.Conv2d(3, inplanes, kernel_size=7, stride=2, padding=3,
+                               bias=False)
+        self.bn1 = nn.BatchNorm2d(inplanes)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        return self.relu(x)
+
+
+class ParallelStem(nn.Module):
+    def __init__(self, **kwargs):
+        super().__init__()
+        self.classic = ClassicStem()
+        self.rich = RichStem()
+
+    def forward(self, x):
+        return self.classic(x) + self.rich(x)
+
+
 class ResNetEncoder(ResNet, EncoderMixin):
-    def __init__(self, out_channels, depth=5, **kwargs):
+    def __init__(self, out_channels, depth=5, fl_maxpool=True, fl_richstem=False,
+                 fl_parallelstem=False, **kwargs):
         super().__init__(**kwargs)
         self._depth = depth
         self._out_channels = out_channels
         self._in_channels = 3
+        self.fl_maxpool = fl_maxpool
+
+        assert not fl_richstem or not fl_parallelstem, \
+               "Or set fl_richstem or fl_richstem_parallel, but not both"
+        self.fl_richstem = fl_richstem
+        self.fl_parallelstem = fl_parallelstem
+
+        if fl_parallelstem:
+            self.stem = ParallelStem()
+        else:
+            self.stem = RichStem() if fl_richstem else ClassicStem()
+
+        del self.conv1
+        del self.bn1
+        del self.relu
 
         del self.fc
         del self.avgpool
@@ -47,8 +213,8 @@ class ResNetEncoder(ResNet, EncoderMixin):
     def get_stages(self):
         return [
             nn.Identity(),
-            nn.Sequential(self.conv1, self.bn1, self.relu),
-            nn.Sequential(self.maxpool, self.layer1),
+            self.stem,
+            nn.Sequential(self.maxpool, self.layer1) if self.fl_maxpool else self.layer1,
             self.layer2,
             self.layer3,
             self.layer4,
@@ -67,7 +233,21 @@ class ResNetEncoder(ResNet, EncoderMixin):
     def load_state_dict(self, state_dict, **kwargs):
         state_dict.pop("fc.bias", None)
         state_dict.pop("fc.weight", None)
-        super().load_state_dict(state_dict, **kwargs)
+
+        if not self.fl_richstem and not self.fl_parallelstem:
+            prefix = 'stem.'
+        elif self.fl_parallelstem:
+            prefix = 'stem.classic.'
+        else:
+            prefix = ''
+
+        update_lnames = ['conv1.weight', 'bn1.weight', 'bn1.bias',
+                         'bn1.running_mean', 'bn1.running_var']
+        for k in list(state_dict.keys()):
+            if k in update_lnames:
+                state_dict['{}{}'.format(prefix, k)] = state_dict.pop(k)
+
+        super().load_state_dict(state_dict, strict=False, **kwargs)
 
 
 new_settings = {
