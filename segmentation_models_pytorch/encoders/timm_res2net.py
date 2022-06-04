@@ -6,6 +6,9 @@ import torch.nn as nn
 
 class Res2NetEncoder(ResNet, EncoderMixin):
     def __init__(self, out_channels, depth=5, **kwargs):
+        for c in ['fl_maxpool', 'fl_richstem', 'fl_parallelstem']:
+            if c in kwargs.keys():
+                kwargs.pop(c)
         super().__init__(**kwargs)
         self._depth = depth
         self._out_channels = out_channels

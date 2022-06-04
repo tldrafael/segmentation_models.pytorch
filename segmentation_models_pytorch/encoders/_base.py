@@ -11,7 +11,6 @@ class EncoderMixin:
     - output channels specification of feature tensors (produced by encoder)
     - patching first convolution for arbitrary input channels
     """
-
     _output_stride = 32
 
     @property
